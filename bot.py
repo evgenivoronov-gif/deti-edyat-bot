@@ -1,6 +1,6 @@
 """
-Telegram-бот для «ДЕТИ ЕДЯТ!» — принимает заявки на доставку питания прямо в чате
-и пересылает оформленную заявку владельцу бизнеса.
+Telegram-бот для «ДЕТИ ЕДЯТ!» — принимает заявки на доставку питания прямо в чате,
+присылает цены/меню и пересылает оформленную заявку владельцу бизнеса.
 
 Запуск локально (polling, для теста):
     python bot.py
@@ -11,6 +11,7 @@ Telegram-бот для «ДЕТИ ЕДЯТ!» — принимает заявк�
 import logging
 import os
 from html import escape
+from pathlib import Path
 
 from telegram import (
     InlineKeyboardButton,
@@ -44,16 +45,46 @@ COMPANY_PHONE = "+7 (911) 920-12-94"
 PORT = int(os.environ.get("PORT", "8080"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # напр. https://your-app.onrender.com
 
+FILES_DIR = Path(__file__).parent / "files"
+FILES = {
+    ("prices", "kindergarten"): (FILES_DIR / "prices_kindergarten.pdf", "Цены — детский сад, сезон 2026"),
+    ("prices", "school"): (FILES_DIR / "prices_school.pdf", "Цены — школа, сезон 2026"),
+    ("menu", "kindergarten"): (FILES_DIR / "menu_kindergarten.xlsx", "Меню (осень) — детский сад, 2026"),
+    ("menu", "school"): (FILES_DIR / "menu_school.xlsx", "Меню (осень) — школа, 2026"),
+}
+
 (
+    MAIN_MENU,
+    PLACE_CHOICE,
     ASK_KIDS_COUNT,
     ASK_MEALS,
     ASK_ADDRESS,
     ASK_NAME,
     ASK_PHONE,
     ASK_CONSENT,
-) = range(6)
+) = range(8)
 
 MEAL_OPTIONS = ["Завтрак", "Второй завтрак", "Обед", "Полдник", "Ужин"]
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📋 Оставить заявку", callback_data="menu:order")],
+            [InlineKeyboardButton("💰 Цены", callback_data="menu:prices")],
+            [InlineKeyboardButton("🍽 Меню", callback_data="menu:menu")],
+        ]
+    )
+
+
+def place_keyboard(action: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧸 Детский сад", callback_data=f"place:{action}:kindergarten")],
+            [InlineKeyboardButton("🎒 Школа", callback_data=f"place:{action}:school")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="menu:back")],
+        ]
+    )
 
 
 def meals_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
@@ -78,11 +109,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text(
         "Здравствуйте! Это бот «ДЕТИ ЕДЯТ!» 🍎\n"
-        "Оформим заявку на доставку питания в детский сад, школу или лагерь.\n\n"
-        "Сколько детей нужно покормить?",
-        reply_markup=ReplyKeyboardRemove(),
+        "Доставка питания в детские сады, школы и летние лагеря.\n\n"
+        "Что вас интересует?",
+        reply_markup=main_menu_keyboard(),
     )
-    return ASK_KIDS_COUNT
+    return MAIN_MENU
+
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Что вас интересует?", reply_markup=main_menu_keyboard())
+    return MAIN_MENU
+
+
+async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    choice = query.data.split(":", 1)[1]
+
+    if choice == "order":
+        await query.edit_message_text("Оформляем заявку.\n\nСколько детей нужно покормить?")
+        return ASK_KIDS_COUNT
+
+    action = "prices" if choice == "prices" else "menu"
+    label = "цены" if action == "prices" else "меню"
+    await query.edit_message_text(
+        f"Для кого нужны {label}?", reply_markup=place_keyboard(action)
+    )
+    return PLACE_CHOICE
+
+
+async def send_requested_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    _, action, place = query.data.split(":", 2)
+
+    file_path, caption = FILES[(action, place)]
+    if file_path.exists():
+        with file_path.open("rb") as f:
+            await context.bot.send_document(chat_id=query.message.chat_id, document=f, caption=caption)
+    else:
+        logger.error("Missing file: %s", file_path)
+        await query.message.reply_text(
+            f"Не получилось найти файл. Позвоните нам: {COMPANY_PHONE}"
+        )
+
+    await query.message.reply_text("Что ещё интересует?", reply_markup=main_menu_keyboard())
+    return MAIN_MENU
 
 
 async def ask_kids_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -213,6 +287,11 @@ def build_application() -> Application:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            MAIN_MENU: [CallbackQueryHandler(main_menu_router, pattern=r"^menu:(order|prices|menu)$")],
+            PLACE_CHOICE: [
+                CallbackQueryHandler(send_requested_file, pattern=r"^place:"),
+                CallbackQueryHandler(show_main_menu, pattern=r"^menu:back$"),
+            ],
             ASK_KIDS_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_kids_count)],
             ASK_MEALS: [CallbackQueryHandler(toggle_meal, pattern=r"^meal:")],
             ASK_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_address)],
@@ -222,7 +301,7 @@ def build_application() -> Application:
             ],
             ASK_CONSENT: [CallbackQueryHandler(handle_consent, pattern=r"^consent:")],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
     application.add_handler(conv_handler)
     return application
