@@ -73,6 +73,15 @@ INSTITUTION_LABELS = {"kindergarten": "Детский сад", "school": "Шко
 MEAL_OPTIONS = ["Завтрак", "Второй завтрак", "Обед", "Полдник", "Ужин"]
 
 
+def price_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧸 Детский сад", callback_data="price_menu:kindergarten")],
+            [InlineKeyboardButton("🎒 Школа", callback_data="price_menu:school")],
+        ]
+    )
+
+
 def institution_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -132,10 +141,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Здравствуйте! Это бот «ДЕТИ ЕДЯТ!» 🍎\n"
         "Доставка питания в детские сады, школы и летние лагеря.\n\n"
-        "Оформим заявку — в конце пришлём актуальные цены и меню.\n\n"
+        "Оформим заявку — в конце пришлём актуальные цены и меню.\n"
+        "Если нужны только цены/меню без заявки — команда /price.\n\n"
         "Сколько детей нужно покормить?",
     )
     return ASK_KIDS_COUNT
+
+
+async def send_price_and_menu(bot, chat_id: int, place: str) -> None:
+    for action in ("prices", "menu"):
+        file_path, caption = FILES[(action, place)]
+        if file_path.exists():
+            with file_path.open("rb") as f:
+                await bot.send_document(chat_id=chat_id, document=f, caption=caption)
+
+
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Для кого нужны цены и меню?", reply_markup=price_menu_keyboard()
+    )
+
+
+async def price_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    place = query.data.split(":", 1)[1]
+
+    await query.edit_message_text(f"Учреждение: {INSTITUTION_LABELS[place]}")
+    await send_price_and_menu(context.bot, query.message.chat_id, place)
+
+
+def detect_institution_from_text(text_lower: str) -> str | None:
+    has_kindergarten = "сад" in text_lower
+    has_school = "школ" in text_lower
+    if has_kindergarten and not has_school:
+        return "kindergarten"
+    if has_school and not has_kindergarten:
+        return "school"
+    return None
+
+
+PRICE_MENU_KEYWORDS = ("цен", "прайс", "стоимост", "меню")
+
+
+async def free_text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text_lower = (update.message.text or "").lower()
+
+    if any(word in text_lower for word in PRICE_MENU_KEYWORDS):
+        place = detect_institution_from_text(text_lower)
+        if place:
+            await update.message.reply_text(f"Учреждение: {INSTITUTION_LABELS[place]}")
+            await send_price_and_menu(context.bot, update.message.chat_id, place)
+        else:
+            await update.message.reply_text(
+                "Для кого нужны цены и меню?", reply_markup=price_menu_keyboard()
+            )
+        return
+
+    await update.message.reply_text(
+        "Не совсем понял 🙂\n"
+        "Чтобы оформить заявку — напишите /start.\n"
+        "Чтобы узнать только цены и меню — напишите /price."
+    )
 
 
 async def ask_kids_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -281,11 +348,7 @@ async def handle_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     place = data.get("institution_place")
     if place:
-        for action in ("prices", "menu"):
-            file_path, caption = FILES[(action, place)]
-            if file_path.exists():
-                with file_path.open("rb") as f:
-                    await context.bot.send_document(chat_id=query.message.chat_id, document=f, caption=caption)
+        await send_price_and_menu(context.bot, query.message.chat_id, place)
 
     institution_full = data.get("institution", "-")
     if data.get("institution_name"):
@@ -323,6 +386,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def build_application() -> Application:
     application = Application.builder().token(BOT_TOKEN).build()
 
+    application.add_handler(CommandHandler("price", price_command))
+    application.add_handler(CallbackQueryHandler(price_menu_callback, pattern=r"^price_menu:"))
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -343,6 +409,7 @@ def build_application() -> Application:
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
     application.add_handler(conv_handler)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text_fallback))
     return application
 
 
