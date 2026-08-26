@@ -241,14 +241,9 @@ async def ask_institution_type(update: Update, context: ContextTypes.DEFAULT_TYP
     place = query.data.split(":", 1)[1]
 
     context.user_data["institution"] = INSTITUTION_LABELS[place]
+    context.user_data["institution_place"] = place
     await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     await query.edit_message_text(f"Учреждение: {context.user_data['institution']}")
-
-    for action in ("prices", "menu"):
-        file_path, caption = FILES[(action, place)]
-        if file_path.exists():
-            with file_path.open("rb") as f:
-                await context.bot.send_document(chat_id=query.message.chat_id, document=f, caption=caption)
 
     await query.message.reply_text(
         "Последний шаг — согласие на обработку персональных данных.\n"
@@ -283,6 +278,14 @@ async def handle_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "Мы свяжемся с вами в ближайшее время, чтобы уточнить детали и цену.\n\n"
         f"Если что-то срочное — звоните: {COMPANY_PHONE}"
     )
+
+    place = data.get("institution_place")
+    if place:
+        for action in ("prices", "menu"):
+            file_path, caption = FILES[(action, place)]
+            if file_path.exists():
+                with file_path.open("rb") as f:
+                    await context.bot.send_document(chat_id=query.message.chat_id, document=f, caption=caption)
 
     institution_full = data.get("institution", "-")
     if data.get("institution_name"):
