@@ -53,8 +53,8 @@ FILES_DIR = Path(__file__).parent / "files"
 FILES = {
     ("prices", "kindergarten"): (FILES_DIR / "Цены_детский_сад.pdf", "Цены — детский сад, сезон 2026"),
     ("prices", "school"): (FILES_DIR / "Цены_школа.pdf", "Цены — школа, сезон 2026"),
-    ("menu", "kindergarten"): (FILES_DIR / "Меню_детский_сад.pdf", "Меню на понедельник — детский сад, 2026"),
-    ("menu", "school"): (FILES_DIR / "Меню_школа.pdf", "Меню на понедельник — школа, 2026"),
+    ("menu", "kindergarten"): (FILES_DIR / "Меню_детский_сад.pdf", "Меню — пример одного дня — детский сад, 2026"),
+    ("menu", "school"): (FILES_DIR / "Меню_школа.pdf", "Меню — пример одного дня — школа, 2026"),
 }
 
 INSTITUTION_LABELS = {"kindergarten": "Детский сад", "school": "Школа"}
