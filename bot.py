@@ -13,6 +13,7 @@ import os
 from html import escape
 from pathlib import Path
 
+import httpx
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -44,6 +45,9 @@ COMPANY_PHONE = "+7 (911) 920-12-94"
 # Порт/URL для вебхука на Render (см. README.md)
 PORT = int(os.environ.get("PORT", "8080"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # напр. https://your-app.onrender.com
+
+# URL Google Apps Script Web App для журнала заявок (необязательно, см. README.md)
+SHEET_WEBHOOK_URL = os.environ.get("SHEET_WEBHOOK_URL")
 
 FILES_DIR = Path(__file__).parent / "files"
 FILES = {
@@ -94,6 +98,27 @@ def meals_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"{mark}{meal}", callback_data=f"meal:{meal}")])
     rows.append([InlineKeyboardButton("Готово ▶️", callback_data="meal:done")])
     return InlineKeyboardMarkup(rows)
+
+
+async def log_to_sheet(user, status: str, data: dict) -> None:
+    if not SHEET_WEBHOOK_URL:
+        return
+    meals = data.get("meals") or set()
+    payload = {
+        "chat_id": user.id,
+        "username": user.username or "",
+        "status": status,
+        "kids_count": data.get("kids_count", ""),
+        "meals": ", ".join(sorted(meals, key=MEAL_OPTIONS.index)),
+        "address": data.get("address", ""),
+        "name": data.get("name", ""),
+        "phone": data.get("phone", ""),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(SHEET_WEBHOOK_URL, json=payload)
+    except Exception:
+        logger.exception("Failed to log order to Google Sheet")
 
 
 def consent_keyboard() -> InlineKeyboardMarkup:
@@ -167,6 +192,7 @@ async def ask_kids_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     context.user_data["kids_count"] = text
     context.user_data["meals"] = set()
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     await update.message.reply_text(
         "Какое питание нужно? Можно выбрать несколько вариантов.",
         reply_markup=meals_keyboard(context.user_data["meals"]),
@@ -187,6 +213,7 @@ async def toggle_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.edit_message_text(
             "Питание: " + ", ".join(sorted(selected, key=MEAL_OPTIONS.index))
         )
+        await log_to_sheet(update.effective_user, "в процессе", context.user_data)
         await query.message.reply_text("Укажите адрес детского сада/школы/лагеря (город, улица, дом):")
         return ASK_ADDRESS
 
@@ -201,12 +228,14 @@ async def toggle_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["address"] = update.message.text.strip()
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     await update.message.reply_text("Как к вам обращаться? (имя)")
     return ASK_NAME
 
 
 async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["name"] = update.message.text.strip()
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     phone_button = KeyboardButton("📱 Отправить мой номер", request_contact=True)
     await update.message.reply_text(
         "Укажите телефон для связи (или отправьте номер кнопкой ниже):",
@@ -222,6 +251,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         phone = update.message.text.strip()
 
     context.user_data["phone"] = phone
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     await update.message.reply_text(
         "Последний шаг — согласие на обработку персональных данных.\n"
         f"Политика конфиденциальности: {PRIVACY_URL}",
@@ -244,6 +274,7 @@ async def handle_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Без согласия на обработку персональных данных мы не можем оформить заявку.\n"
             f"Если передумаете — напишите /start, либо позвоните нам: {COMPANY_PHONE}"
         )
+        await log_to_sheet(update.effective_user, "отклонил согласие", context.user_data)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -267,12 +298,15 @@ async def handle_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "✅ Согласие на обработку ПД получено"
     )
     await context.bot.send_message(chat_id=OWNER_CHAT_ID, text=summary, parse_mode="HTML")
+    await log_to_sheet(user, "заявка оформлена", data)
 
     context.user_data.clear()
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data:
+        await log_to_sheet(update.effective_user, "отменил", context.user_data)
     context.user_data.clear()
     await update.message.reply_text(
         "Заявка отменена. Если захотите оформить снова — напишите /start.",
