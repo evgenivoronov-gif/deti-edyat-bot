@@ -57,6 +57,8 @@ FILES = {
     ("menu", "school"): (FILES_DIR / "menu_school.xlsx", "Меню (осень) — школа, 2026"),
 }
 
+INSTITUTION_LABELS = {"kindergarten": "Детский сад", "school": "Школа"}
+
 (
     MAIN_MENU,
     PLACE_CHOICE,
@@ -65,8 +67,10 @@ FILES = {
     ASK_ADDRESS,
     ASK_NAME,
     ASK_PHONE,
+    ASK_INSTITUTION_NAME,
+    ASK_INSTITUTION_TYPE,
     ASK_CONSENT,
-) = range(8)
+) = range(10)
 
 MEAL_OPTIONS = ["Завтрак", "Второй завтрак", "Обед", "Полдник", "Ужин"]
 
@@ -91,6 +95,19 @@ def place_keyboard(action: str) -> InlineKeyboardMarkup:
     )
 
 
+def institution_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧸 Детский сад", callback_data="institution:kindergarten")],
+            [InlineKeyboardButton("🎒 Школа", callback_data="institution:school")],
+        ]
+    )
+
+
+def skip_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить ➡️", callback_data="skip_institution_name")]])
+
+
 def meals_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
     rows = []
     for meal in MEAL_OPTIONS:
@@ -98,6 +115,15 @@ def meals_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(f"{mark}{meal}", callback_data=f"meal:{meal}")])
     rows.append([InlineKeyboardButton("Готово ▶️", callback_data="meal:done")])
     return InlineKeyboardMarkup(rows)
+
+
+def consent_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Согласен(а)", callback_data="consent:yes")],
+            [InlineKeyboardButton("Отмена", callback_data="consent:no")],
+        ]
+    )
 
 
 async def log_to_sheet(user, status: str, data: dict) -> None:
@@ -109,6 +135,8 @@ async def log_to_sheet(user, status: str, data: dict) -> None:
         "username": user.username or "",
         "status": status,
         "kids_count": data.get("kids_count", ""),
+        "institution": data.get("institution", ""),
+        "institution_name": data.get("institution_name", ""),
         "meals": ", ".join(sorted(meals, key=MEAL_OPTIONS.index)),
         "address": data.get("address", ""),
         "name": data.get("name", ""),
@@ -119,15 +147,6 @@ async def log_to_sheet(user, status: str, data: dict) -> None:
             await client.post(SHEET_WEBHOOK_URL, json=payload)
     except Exception:
         logger.exception("Failed to log order to Google Sheet")
-
-
-def consent_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✅ Согласен(а)", callback_data="consent:yes")],
-            [InlineKeyboardButton("Отмена", callback_data="consent:no")],
-        ]
-    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -154,6 +173,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     choice = query.data.split(":", 1)[1]
 
     if choice == "order":
+        context.user_data.clear()
         await query.edit_message_text("Оформляем заявку.\n\nСколько детей нужно покормить?")
         return ASK_KIDS_COUNT
 
@@ -253,11 +273,54 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["phone"] = phone
     await log_to_sheet(update.effective_user, "в процессе", context.user_data)
     await update.message.reply_text(
+        "Как называется ваш сад или школа? Можно написать название, а можно пропустить этот шаг.",
+        reply_markup=skip_keyboard(),
+    )
+    return ASK_INSTITUTION_NAME
+
+
+async def ask_institution_type_prompt(target_message) -> int:
+    await target_message.reply_text(
+        "И последнее: вам нужна цена и меню для сада или для школы?",
+        reply_markup=institution_keyboard(),
+    )
+    return ASK_INSTITUTION_TYPE
+
+
+async def institution_name_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["institution_name"] = update.message.text.strip()
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
+    return await ask_institution_type_prompt(update.message)
+
+
+async def institution_name_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["institution_name"] = ""
+    await query.edit_message_reply_markup(reply_markup=None)
+    return await ask_institution_type_prompt(query.message)
+
+
+async def ask_institution_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    place = query.data.split(":", 1)[1]
+
+    context.user_data["institution"] = INSTITUTION_LABELS[place]
+    await log_to_sheet(update.effective_user, "в процессе", context.user_data)
+    await query.edit_message_text(f"Учреждение: {context.user_data['institution']}")
+
+    for action in ("prices", "menu"):
+        file_path, caption = FILES[(action, place)]
+        if file_path.exists():
+            with file_path.open("rb") as f:
+                await context.bot.send_document(chat_id=query.message.chat_id, document=f, caption=caption)
+
+    await query.message.reply_text(
         "Последний шаг — согласие на обработку персональных данных.\n"
         f"Политика конфиденциальности: {PRIVACY_URL}",
-        reply_markup=ReplyKeyboardRemove(),
     )
-    await update.message.reply_text(
+    await query.message.reply_text(
         "Подтверждаете согласие на обработку персональных данных?",
         reply_markup=consent_keyboard(),
     )
@@ -287,11 +350,16 @@ async def handle_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Если что-то срочное — звоните: {COMPANY_PHONE}"
     )
 
+    institution_full = data.get("institution", "-")
+    if data.get("institution_name"):
+        institution_full += f" ({data['institution_name']})"
+
     summary = (
         "🆕 <b>Новая заявка из Telegram-бота</b>\n\n"
         f"👶 Детей: {escape(data.get('kids_count', '-'))}\n"
         f"🍽 Питание: {escape(', '.join(sorted(data.get('meals', []), key=MEAL_OPTIONS.index)))}\n"
         f"📍 Адрес: {escape(data.get('address', '-'))}\n"
+        f"🏫 Учреждение: {escape(institution_full)}\n"
         f"👤 Имя: {escape(data.get('name', '-'))}\n"
         f"📞 Телефон: {escape(data.get('phone', '-'))}\n"
         f"💬 Telegram: @{escape(user.username) if user.username else '(без username)'} (id {user.id})\n"
@@ -333,6 +401,11 @@ def build_application() -> Application:
             ASK_PHONE: [
                 MessageHandler(filters.CONTACT | (filters.TEXT & ~filters.COMMAND), ask_phone)
             ],
+            ASK_INSTITUTION_NAME: [
+                CallbackQueryHandler(institution_name_skip, pattern=r"^skip_institution_name$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, institution_name_text),
+            ],
+            ASK_INSTITUTION_TYPE: [CallbackQueryHandler(ask_institution_type, pattern=r"^institution:")],
             ASK_CONSENT: [CallbackQueryHandler(handle_consent, pattern=r"^consent:")],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
