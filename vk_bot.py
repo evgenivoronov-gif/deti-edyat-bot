@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import httpx
+from aiohttp import web
 from vkbottle import (
     Callback,
     DocMessagesUploader,
@@ -398,6 +399,27 @@ async def on_callback(event: MessageEvent):
         return
 
 
+async def _health(request):
+    return web.Response(text="ok")
+
+
+async def run_health_server() -> None:
+    """Минимальный HTTP-сервер только для health-check Render (free Web Service
+    требует открытый порт). Сам бот работает через VK Long Poll, а не вебхук."""
+    port = int(os.environ.get("PORT", 10000))
+    app = web.Application()
+    app.router.add_get("/", _health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health server listening on port %s", port)
+
+
+async def main() -> None:
+    await asyncio.gather(run_health_server(), bot.run_polling())
+
+
 if __name__ == "__main__":
     logger.info("Starting VK bot (Long Poll)")
-    bot.run_forever()
+    asyncio.run(main())
