@@ -128,6 +128,7 @@ async def log_to_sheet(user, status: str, data: dict) -> None:
         "address": data.get("address", ""),
         "name": data.get("name", ""),
         "phone": data.get("phone", ""),
+        "channel": "Telegram",
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:

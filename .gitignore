@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .env
 venv/
+.vkbottle/
+*.log
+assets/*.ttf
+assets/*.png
+assets/badge_logo.py
+assets/make_logo.py
