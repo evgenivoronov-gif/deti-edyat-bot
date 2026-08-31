@@ -141,8 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Здравствуйте! Это бот «ДЕТИ ЕДЯТ!» 🍎\n"
         "Доставка питания в детские сады, школы и летние лагеря.\n\n"
-        "Оформим заявку — в конце пришлём актуальные цены и меню.\n"
-        "Если нужны только цены/меню без заявки — команда /price.\n\n"
+        "Оформим заявку — в конце пришлём актуальные цены и меню.\n\n"
         "Сколько детей нужно покормить?",
     )
     return ASK_KIDS_COUNT
@@ -250,7 +249,7 @@ async def toggle_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["address"] = update.message.text.strip()
     await log_to_sheet(update.effective_user, "в процессе", context.user_data)
-    await update.message.reply_text("Как к вам обращаться? (имя)")
+    await update.message.reply_text("Подскажите, пожалуйста, как я могу к вам обращаться?")
     return ASK_NAME
 
 
