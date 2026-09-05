@@ -2,7 +2,9 @@
 VK-бот для «ДЕТИ ЕДЯТ!» — та же логика, что и Telegram-бот: принимает заявки,
 присылает цены/меню, пишет всё в тот же Google Sheets-журнал.
 
-Запуск: python vk_bot.py (Long Poll — не нужен вебхук/порт).
+Запуск: python vk_bot.py — Callback API (вебхук), как у Telegram-бота.
+Long Poll не используется: на бесплатном Render-инстансе он не переживает
+"засыпание" и теряет сообщения, пришедшие пока бот спал.
 """
 
 import asyncio
@@ -20,6 +22,7 @@ from vkbottle import (
     KeyboardButtonColor,
 )
 from vkbottle.bot import Bot, Message, MessageEvent
+from vkbottle.callback import BotCallback
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -45,7 +48,10 @@ INSTITUTION_LABELS = {"kindergarten": "Детский сад", "school": "Шко
 MEAL_OPTIONS = ["Завтрак", "Второй завтрак", "Обед", "Полдник", "Ужин"]
 PRICE_MENU_KEYWORDS = ("цен", "прайс", "стоимост", "меню")
 
-bot = Bot(token=VK_TOKEN)
+CALLBACK_PATH = "/vk/callback"
+CALLBACK_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://deti-edyat-vk-bot.onrender.com") + CALLBACK_PATH
+
+bot = Bot(token=VK_TOKEN, callback=BotCallback(url=CALLBACK_URL, title="Render"))
 uploader = DocMessagesUploader(api=bot.api)
 
 # Простое хранилище состояния диалога по user_id (в памяти процесса)
@@ -403,23 +409,58 @@ async def _health(request):
     return web.Response(text="ok")
 
 
-async def run_health_server() -> None:
-    """Минимальный HTTP-сервер только для health-check Render (free Web Service
-    требует открытый порт). Сам бот работает через VK Long Poll, а не вебхук."""
+_confirmation_code = ""
+
+
+async def _vk_callback(request):
+    data = await request.json()
+
+    event_type = data.get("type")
+    if event_type == "confirmation":
+        return web.Response(text=_confirmation_code)
+
+    secret = bot.callback.get_secret_key()
+    if secret and data.get("secret") != secret:
+        logger.warning("Callback: неверный secret, запрос проигнорирован")
+        return web.Response(text="ok")
+
+    await bot.process_event(data, bot.api)
+    return web.Response(text="ok")
+
+
+async def setup_callback() -> None:
+    global _confirmation_code
+    await bot.callback.setup_group_id()
+    _confirmation_code = await bot.callback.get_callback_confirmation_code()
+
+    server_id = await bot.callback.find_server_id()
+    if server_id is None:
+        server_id = await bot.callback.add_callback_server()
+    else:
+        await bot.callback.edit_callback_server(server_id)
+    await bot.callback.set_callback_settings(
+        server_id, {"message_new": True, "message_event": True}
+    )
+    logger.info("Callback API настроен: %s", CALLBACK_URL)
+
+
+async def run_server() -> None:
     port = int(os.environ.get("PORT", 10000))
     app = web.Application()
     app.router.add_get("/", _health)
+    app.router.add_post(CALLBACK_PATH, _vk_callback)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("Health server listening on port %s", port)
+    logger.info("Server listening on port %s", port)
 
+    await setup_callback()
 
-async def main() -> None:
-    await asyncio.gather(run_health_server(), bot.run_polling())
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    logger.info("Starting VK bot (Long Poll)")
-    asyncio.run(main())
+    logger.info("Starting VK bot (Callback API)")
+    asyncio.run(run_server())
