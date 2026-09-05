@@ -416,15 +416,22 @@ async def _vk_callback(request):
     data = await request.json()
 
     event_type = data.get("type")
+    logger.info("Callback: получено событие %s", event_type)
     if event_type == "confirmation":
         return web.Response(text=_confirmation_code)
 
     secret = bot.callback.get_secret_key()
     if secret and data.get("secret") != secret:
-        logger.warning("Callback: неверный secret, запрос проигнорирован")
+        logger.warning(
+            "Callback: неверный secret (получено %r), запрос проигнорирован",
+            data.get("secret"),
+        )
         return web.Response(text="ok")
 
-    await bot.process_event(data, bot.api)
+    try:
+        await bot.process_event(data, bot.api)
+    except Exception:
+        logger.exception("Callback: ошибка при обработке события %s", event_type)
     return web.Response(text="ok")
 
 
