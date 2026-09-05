@@ -172,14 +172,22 @@ async def start_order_flow(message: Message) -> None:
     )
 
 
+RESTART_KEYWORDS = ("заново", "начать сначала", "начать", "старт", "/start")
+
+
 @bot.on.message()
 async def on_message(message: Message):
     user_id = message.from_id
     text = (message.text or "").strip()
+    text_lower = text.lower()
+
+    if text_lower in RESTART_KEYWORDS:
+        await start_order_flow(message)
+        return
+
     session = sessions.get(user_id)
 
     if session is None:
-        text_lower = text.lower()
         if any(word in text_lower for word in PRICE_MENU_KEYWORDS):
             place = detect_institution_from_text(text_lower)
             if place:
@@ -250,8 +258,11 @@ async def on_message(message: Message):
         return
 
     # На остальных шагах (выбор питания/сада-школы/согласие) ждём нажатия кнопки,
-    # а не текст — вежливо подсказываем.
-    await message.answer("Пожалуйста, воспользуйтесь кнопками выше 🙂")
+    # а не текст — вежливо подсказываем и даём способ перезапустить диалог.
+    await message.answer(
+        "Пожалуйста, воспользуйтесь кнопками в сообщении выше 🙂\n"
+        "Если кнопок не видно или хотите начать заново — напишите «заново»."
+    )
 
 
 @bot.on.raw_event(GroupEventType.MESSAGE_EVENT, dataclass=MessageEvent)
