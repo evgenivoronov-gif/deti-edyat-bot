@@ -1,0 +1,26 @@
+name: Ежемесячное напоминание — обновить базу клиентов
+
+on:
+  schedule:
+    # 1-го числа каждого месяца, 06:00 UTC = 09:00 по Москве
+    - cron: "0 6 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Отправить напоминание в Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_CHAT_ID: ${{ secrets.OWNER_CHAT_ID }}
+        run: |
+          TEXT="📋 Ежемесячное напоминание — Дети едят
+
+          Пора проверить базу потенциальных клиентов (частные сады/школы СПб) на новых.
+
+          Открой Claude Code и попроси: «обнови базу клиентов Дети едят — проверь новых на kidsreview.ru, Яндекс.Картах, Google Maps и 2ГИС, добавь новых в таблицу и отметь их». Заодно можно попросить освежить анализ цен конкурентов."
+
+          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${OWNER_CHAT_ID}" \
+            --data-urlencode "text=${TEXT}"
